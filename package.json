@@ -1,0 +1,21 @@
+{
+  "name": "neon-bomber-server",
+  "description": "Authoritative Node.js + Socket.IO multiplayer server for NEON BOMBER",
+  "private": true,
+  "version": "1.0.0",
+  "main": "index.js",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "test": "node --test test/*.test.js",
+    "lint": "node --check index.js && node --check rooms/manager.js && node --check lib/codes.js && node --check lib/validate.js && node --check lib/rooms.js && node --check lib/match.js && node --check lib/cleanup.js && node --check game/sim.js && node --check game/levelgen.js && node --check ai/bots.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.7.5"
+  }
+}

@@ -1,0 +1,12 @@
+node_modules/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+database-debug.log
+ui-debug.log
+.env
+.env.local
+*.key
+*.pem
+serviceAccount*.json
+database-emulator*.json
