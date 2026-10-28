@@ -4,7 +4,7 @@
    pickups, eliminations and victory. Clients only send intents
    (move / bomb / throw) and render snapshots.
 
-   Rules are a faithful port of public/game.js so online play feels
+   Rules are a faithful port of frontend/game.js so online play feels
    identical to the campaign: same collision box (ENTITY_HALF), snap
    assist, bomb-escape semantics, fuse (2.4s), flame damage window
    (0.22s inside a 0.65s visible life), blast-id damage dedupe, shield

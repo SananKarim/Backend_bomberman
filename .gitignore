@@ -5,7 +5,8 @@ firestore-debug.log
 database-debug.log
 ui-debug.log
 .env
-.env.local
+.env.*
+!.env.example
 *.key
 *.pem
 serviceAccount*.json

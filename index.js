@@ -45,7 +45,7 @@ const matches = new Map();        // code → { sim, timer, counter, forfeitAt }
 const startedAt = Date.now();
 
 if (process.env.SERVE_PUBLIC === '1') {
-  app.use(express.static(path.join(__dirname, '..', 'public')));
+  app.use(express.static(path.join(__dirname, '..', 'frontend')));
 }
 app.get('/health', (_req, res) => {
   res.json({ ok: true, rooms: manager.rooms.size, matches: matches.size,

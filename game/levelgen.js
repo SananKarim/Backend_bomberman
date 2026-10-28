@@ -1,4 +1,4 @@
-/* Server-side twin of public/levelgen.js — identical constants, identical
+/* Server-side twin of frontend/levelgen.js — identical constants, identical
    RNG sequence, so server and clients independently derive the SAME board
    from the same seed. Do not "improve" one copy without mirroring the other. */
 'use strict';
