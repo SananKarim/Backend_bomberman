@@ -46,6 +46,7 @@ class RoomManager {
   join(rawCode, rawName) {
     const code = String(rawCode || '').trim().toUpperCase();
     if (!codes.isValidCode(code)) throw new RoomError('invalid-code', 'Invalid room code');
+    this.pruneOffline(code);
     const room = this.rooms.get(code);
     if (!room) throw new RoomError('not-found', 'No room with that code');
     const playerId = newPlayerId();
@@ -76,6 +77,7 @@ class RoomManager {
   }
 
   configure(code, playerId, patch) {
+    this.pruneOffline(code);
     const room = this.rooms.get(code);
     if (!room) throw new RoomError('not-found', 'Room gone');
     const next = roomsLib.configureRoom(room, { uid: playerId, patch, now: this.now() });
@@ -84,6 +86,7 @@ class RoomManager {
   }
 
   startMatch(code, playerId) {
+    this.pruneOffline(code);
     const room = this.rooms.get(code);
     if (!room) throw new RoomError('not-found', 'Room gone');
     const seed = `${code}:${this.now()}`;
@@ -144,11 +147,23 @@ class RoomManager {
 
   /* ---------- maintenance ---------- */
 
+  pruneOffline(code) {
+    const room = this.rooms.get(code);
+    if (!room || room.status === 'match') return;
+    for (const player of Object.values(room.players)) {
+      if (!player.online && this.now() - player.lastSeen > cleanupLib.PRESENCE_GRACE_MS) {
+        this.leave(code, player.uid);
+      }
+    }
+  }
+
   /** Remove rooms whose players are all stale (see lib/cleanup.js). */
   sweep() {
     const doomed = [];
-    this.rooms.forEach((room, code) => {
-      if (cleanupLib.isStale(room, this.now())) doomed.push(code);
+    this.rooms.forEach((_room, code) => {
+      this.pruneOffline(code);
+      const room = this.rooms.get(code);
+      if (!room || cleanupLib.isStale(room, this.now())) doomed.push(code);
     });
     doomed.forEach((c) => this.rooms.delete(c));
     return doomed;

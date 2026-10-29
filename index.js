@@ -11,6 +11,7 @@
 
 const path = require('node:path');
 const http = require('node:http');
+const { performance } = require('node:perf_hooks');
 const express = require('express');
 const { Server } = require('socket.io');
 
@@ -81,6 +82,7 @@ function stopMatch(code, { silent = false } = {}) {
   const entry = matches.get(code);
   if (!entry) return;
   clearInterval(entry.timer);
+  clearTimeout(entry.cleanupTimer);
   matches.delete(code);
   if (!silent) {
     const s = entry.sim.snapshot();          // flush remaining deltas once
@@ -100,32 +102,43 @@ function startMatchBroadcast(code, room) {
   });
   const entry = {
     sim: world,
-    counter: 0,
     forfeitAt: {},
-    broadcastEvery: Math.max(1, Math.round(BROADCAST_MS / SIM_TICK_MS)),
+    lastInputAt: {},
     timer: null,
+    cleanupTimer: null,
   };
   matches.set(code, entry);
   io.to(ioRoom(code)).emit('match:start', world.startPayload());
 
   const dt = SIM_TICK_MS / 1000;
+  let previous = performance.now(), accumulator = 0, broadcastAt = previous;
   entry.timer = setInterval(() => {
     try {
-      if (!world.ended) {
-        const now = Date.now();
-        for (const [pid, until] of Object.entries(entry.forfeitAt)) {
-          if (now >= until) { world.forfeit(pid); delete entry.forfeitAt[pid]; }
-        }
-        world.update(dt);
+      const now = performance.now();
+      accumulator = Math.min(accumulator + now - previous, SIM_TICK_MS * 5);
+      previous = now;
+      for (const [pid, until] of Object.entries(entry.forfeitAt)) {
+        if (Date.now() >= until) { world.forfeit(pid); delete entry.forfeitAt[pid]; }
       }
-      if (++entry.counter >= entry.broadcastEvery) {
-        entry.counter = 0;
+      for (const [pid, received] of Object.entries(entry.lastInputAt)) {
+        if (now - received > 1000) {
+          world.applyIntent(pid, { type: 'move', dirX: 0, dirY: 0 });
+          delete entry.lastInputAt[pid];
+        }
+      }
+      while (accumulator >= SIM_TICK_MS && !world.ended) {
+        world.update(dt);
+        accumulator -= SIM_TICK_MS;
+      }
+      if (now - broadcastAt >= BROADCAST_MS || world.ended) {
+        broadcastAt += Math.floor((now - broadcastAt) / BROADCAST_MS) * BROADCAST_MS;
         const s = world.snapshot();
-        // Socket.IO buffers per socket, so one congested client cannot
-        // stall the rest of the room; everyone gets the same ordered seq.
-        io.to(ioRoom(code)).emit('match:snapshot', s);
-        if (world.ended && !entry.closed) {
-          entry.closed = true;
+        const channel = io.to(ioRoom(code));
+        // Keep gameplay deltas reliable; obsolete position-only frames may be dropped.
+        if (s.destroyed.length || s.events.length || s.ended) channel.emit('match:snapshot', s);
+        else channel.volatile.emit('match:snapshot', s);
+        if (world.ended) {
+          clearInterval(entry.timer);
           const room2 = manager.get(code);
           if (room2) {
             room2.status = 'ended';
@@ -134,7 +147,9 @@ function startMatchBroadcast(code, room) {
             room2.updatedAt = Date.now();
             pushRoom(code);
           }
-          setTimeout(() => stopMatch(code), 60000);   // late-ack grace, then teardown
+          entry.cleanupTimer = setTimeout(() => {
+            if (matches.get(code) === entry) stopMatch(code, { silent: true });
+          }, 60000);
         }
       }
     } catch (e) {
@@ -150,10 +165,11 @@ io.on('connection', (socket) => {
   socket.data.playerId = null;
 
   const me = () => {
-    if (!socket.data.code || !socket.data.playerId) return null;
-    const found = manager.findPlayer(socket.data.playerId);
-    if (!found || found.code !== socket.data.code) return null;
-    return { code: found.code, playerId: socket.data.playerId, room: found.room, player: found.player };
+    const { code, playerId } = socket.data;
+    const room = manager.get(code);
+    const player = room && room.players[playerId];
+    if (!player || player.socketId !== socket.id) return null;
+    return { code, playerId, room, player };
   };
 
   /* auto-reconnect: credentials ride the handshake, never a guessed id */
@@ -161,21 +177,27 @@ io.on('connection', (socket) => {
   if (auth.code && auth.playerId && auth.token) {
     try {
       const { room, player } = manager.resume(auth.code, auth.playerId, auth.token);
-      socket.data.code = auth.code;
+      const code = room.code;
+      const previous = io.sockets.sockets.get(player.socketId);
+      socket.data.code = code;
       socket.data.playerId = auth.playerId;
-      manager.setSocket(auth.code, auth.playerId, socket.id);
-      void socket.join(ioRoom(auth.code));
-      const entry = matches.get(auth.code);
-      if (entry) delete entry.forfeitAt[auth.playerId];
+      manager.setSocket(code, auth.playerId, socket.id);
+      if (previous && previous !== socket) previous.disconnect(true);
+      void socket.join(ioRoom(code));
+      const entry = matches.get(code);
+      if (entry) {
+        delete entry.forfeitAt[auth.playerId];
+        entry.sim.applyIntent(auth.playerId, { type: 'move', dirX: 0, dirY: 0 });
+      }
       socket.emit('room:resumed', {
         ok: true,
         room: manager.publicRoomObj(room),
         playerId: auth.playerId,
         inMatch: room.status === 'match' || room.status === 'ended',
-        snapshot: entry ? entry.sim.snapshot() : null,
+        snapshot: entry ? entry.sim.snapshot({ resume: true }) : null,
         matchStart: entry ? entry.sim.startPayload() : null,
       });
-      pushRoom(auth.code);
+      pushRoom(code);
     } catch (e) {
       socket.emit('room:resumed', { ok: false, code: e.code || 'resume-failed', error: e.message });
     }
@@ -254,6 +276,7 @@ io.on('connection', (socket) => {
     if (!found) return fail(cb, 'not-in', 'You are not in a room');
     try {
       const room = manager.startMatch(found.code, found.playerId);
+      stopMatch(found.code, { silent: true });
       pushRoom(found.code);
       startMatchBroadcast(found.code, room);
       done(cb);
@@ -265,8 +288,8 @@ io.on('connection', (socket) => {
     const found = me();
     if (!found) return fail(cb, 'not-in', 'You are not in a room');
     try {
-      stopMatch(found.code);
       manager.returnToLobby(found.code, found.playerId);
+      stopMatch(found.code);
       done(cb); pushRoom(found.code);
     } catch (e) { fail(cb, e.code || 'return-failed', e.message); }
   });
@@ -278,9 +301,10 @@ io.on('connection', (socket) => {
     if (!entry || entry.sim.ended) return;
     if (!rateOk(socket, 'input', 30)) return;
     if (badPayload(payload) || payload.type !== 'move') return;
-    entry.sim.applyIntent(found.playerId, {
-      type: 'move', dirX: payload.dirX, dirY: payload.dirY,
+    const result = entry.sim.applyIntent(found.playerId, {
+      type: 'move', dirX: payload.dirX, dirY: payload.dirY, seq: payload.seq,
     });
+    if (result.ok) entry.lastInputAt[found.playerId] = performance.now();
   });
 
   socket.on('game:action', (payload, cb) => {
@@ -305,13 +329,16 @@ io.on('connection', (socket) => {
     manager.markOnline(code, playerId, false);
     if (room.hostUid === playerId) {
       const heir = Object.values(room.players)
-        .filter((p) => p.uid !== playerId)
+        .filter((p) => p.uid !== playerId && p.online)
         .sort((a, b) => a.joinedAt - b.joinedAt)[0];
       if (heir) room.hostUid = heir.uid;         // host transfer on disconnect
     }
     const entry = matches.get(code);
-    if (entry && room.status === 'match') entry.forfeitAt[playerId] = Date.now() + FORFEIT_GRACE_MS;
-    if (Object.values(room.players).every((p) => !p.online)) stopMatch(code, { silent: true });
+    if (entry && room.status === 'match') {
+      entry.sim.applyIntent(playerId, { type: 'move', dirX: 0, dirY: 0 });
+      delete entry.lastInputAt[playerId];
+      entry.forfeitAt[playerId] = Date.now() + FORFEIT_GRACE_MS;
+    }
     pushRoom(code);
   });
 });

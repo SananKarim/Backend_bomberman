@@ -9,7 +9,7 @@ process.env.BROADCAST_MS = '40';
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { io: connect } = require('socket.io-client');
-const { start, server, manager } = require('../index');
+const { start, server, manager, io, matches } = require('../index');
 
 const ready = start(0).then(() => server.address().port);
 const origin = 'http://127.0.0.1';
@@ -52,7 +52,14 @@ function followSnapshots(c, predicate) {
   });
 }
 
-after(() => { server.close(); });
+after(() => {
+  for (const entry of matches.values()) {
+    clearInterval(entry.timer);
+    clearTimeout(entry.cleanupTimer);
+  }
+  matches.clear();
+  io.close();
+});
 
 test('lobby lifecycle: create, join, ready, host start, synced snapshots', async () => {
   const port = await ready;

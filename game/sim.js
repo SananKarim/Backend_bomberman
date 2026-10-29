@@ -148,6 +148,7 @@ function createMatch(opts) {
       throwCd: 0,
       rng: rngFrom(`${arenaSeed}:actor:${p.id}`),
       kills: 0, deaths: 0, outAt: 0,
+      inputSeq: 0, vx: 0, vy: 0,
     };
     actors.push(actor);
     if (p.isBot) {
@@ -165,6 +166,7 @@ function createMatch(opts) {
     flames: [],       // {cellX, cellY, shape, kind, blast, by, life, dmg}
     pickups: [],      // {uid, cellX, cellY, type}
     destroyed: [],    // cells removed since the last snapshot
+    destroyedHistory: [],
     events: [],       // {type, ...} since the last snapshot
     mazeVersion: 0,
     blastSeq: 0,
@@ -176,7 +178,8 @@ function createMatch(opts) {
   };
 
   const tileAt = (x, y) => (x < 0 || y < 0 || x >= COLS || y >= ROWS) ? T_SOLID : board[y][x];
-  const bombAtCell = (x, y) => world.bombs.find((b) => b.cellX === x && b.cellY === y) || null;
+  // Airborne bombs keep an infinite fuse until landing.
+  const bombAtCell = (x, y) => world.bombs.find((b) => Number.isFinite(b.fuse) && b.cellX === x && b.cellY === y) || null;
   world.tileAt = tileAt;
   world.bombAtCell = bombAtCell;
 
@@ -199,6 +202,7 @@ function createMatch(opts) {
 
   function moveActor(a, ix, iy, dt) {
     const sp = effectiveSpeed(a);
+    const beforeX = a.x, beforeY = a.y;
     const dx = ix * sp * dt, dy = iy * sp * dt;
     if (dx !== 0 && !boxBlocked(a.x + dx, a.y, a)) a.x += dx;
     if (dy !== 0 && !boxBlocked(a.x, a.y + dy, a)) a.y += dy;
@@ -209,6 +213,8 @@ function createMatch(opts) {
       const cx = Math.floor(a.x / TILE) * TILE + TILE / 2;
       a.x += (cx - a.x) * Math.min(1, SNAP_ASSIST * SNAP_T);
     }
+    a.vx = (a.x - beforeX) / dt;
+    a.vy = (a.y - beforeY) / dt;
   }
 
   function effectiveSpeed(a) {
@@ -239,6 +245,10 @@ function createMatch(opts) {
     const a = byId.get(actorId);
     if (!a || !a.alive || world.ended) return { ok: false, code: 'ignored' };
     if (intent.type === 'move') {
+      if (intent.seq !== undefined) {
+        if (!Number.isSafeInteger(intent.seq) || intent.seq <= a.inputSeq) return { ok: false, code: 'stale-input' };
+        a.inputSeq = intent.seq;
+      }
       const dx = clampUnit(intent.dirX), dy = clampUnit(intent.dirY);
       if (dx || dy) a.dir = { x: dx, y: dy };
       a.intent = { x: dx, y: dy };
@@ -346,6 +356,7 @@ function createMatch(opts) {
         if (tile === T_SOFT) {
           board[ty][tx] = T_EMPTY;
           world.destroyed.push([tx, ty]);
+          world.destroyedHistory.push([tx, ty]);
           const drop = dropFor(arenaSeed, tx, ty);
           if (drop) world.pickups.push({ uid: nextUid(), cellX: tx, cellY: ty, type: drop });
           break;                                // flame is absorbed by the block it ate
@@ -553,17 +564,19 @@ function createMatch(opts) {
   }
 
   /* ---- snapshot for broadcast ---- */
-  function snapshot() {
+  function snapshot({ resume = false } = {}) {
     world.seq++;
-    const destroyed = world.destroyed.splice(0);
-    const events = world.events.splice(0);
+    const destroyed = resume ? world.destroyedHistory.slice() : world.destroyed.splice(0);
+    const events = resume ? [] : world.events.splice(0);
     return {
       seq: world.seq, t: Math.round(world.t * 1000),
       alive: world.actors.filter((a) => a.alive).length,
       ended: world.ended, winnerId: world.winnerId,
       actors: world.actors.map((a) => ({
-        id: a.id, x: Math.round(a.x), y: Math.round(a.y),
+        id: a.id, x: +a.x.toFixed(1), y: +a.y.toFixed(1),
         dx: a.dir.x, dy: a.dir.y, alive: a.alive,
+        vx: a.alive ? +a.vx.toFixed(1) : 0, vy: a.alive ? +a.vy.toFixed(1) : 0,
+        inputSeq: a.inputSeq,
         bombs: ownerBombs(a), bombMax: a.bombMax, shield: a.shield,
         invuln: a.invuln > 0, tosser: a.tosser,
         turboMs: Math.round(a.turboTimer * 1000),
@@ -574,7 +587,7 @@ function createMatch(opts) {
       bombs: world.bombs.map((b) => {
         const f = world.flights.find((x) => x.bomb === b);
         return { uid: b.uid, owner: b.owner, cellX: b.cellX, cellY: b.cellY,
-                 range: b.range, fuseMs: f ? -1 : Math.max(0, Math.round(b.fuse * 1000)),
+                 escape: !!b.escape, range: b.range, fuseMs: f ? -1 : Math.max(0, Math.round(b.fuse * 1000)),
                  flight: f ? { fx: Math.round(f.fromX), fy: Math.round(f.fromY),
                                tx: f.toX * TILE + TILE / 2, ty: f.toY * TILE + TILE / 2,
                                p: +Math.min(1, f.t / f.dur).toFixed(2) } : null };

@@ -114,12 +114,12 @@ function step(bot, self, world, dt) {
   }
 
   const from = cellOf(self);
-  if (!bot.path || bot.pathTimer <= 0 || bot.mazeVer !== world.mazeVersion) {
+  if (bot.pathTimer <= 0 || bot.mazeVer !== world.mazeVersion) {
     bot.path = bfsPath(world, from.x, from.y, goal.x, goal.y);
     bot.pathTimer = PATH_INTERVAL;
     bot.mazeVer = world.mazeVersion;
-    if (!bot.path) { wander(bot, self, world, dt, out); return out; }
   }
+  if (!bot.path) { wander(bot, self, world, dt, out); return out; }
 
   if (bot.path.length) {
     const w = bot.path[0];
@@ -155,6 +155,7 @@ function scareNear(world, bots, cellX, cellY, radius = 4) {
     if (Math.abs(c.x - cellX) + Math.abs(c.y - cellY) <= radius) {
       b.brain.fleeTimer = FLEE_TIME;
       b.brain.path = null;
+      b.brain.pathTimer = 0;
       b.brain.turnTimer = 0;
     }
   }
